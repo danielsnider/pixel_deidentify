@@ -34,8 +34,8 @@ input_folder = '/home/dan/Two_Images'
 input_folder = '/home/dan/Pictures/Spikey'
 input_folder = '/home/dan/Pictures/US'
 MATCH_CONF_THRESH = 50
-OUTPUT = 'files'
 OUTPUT = 'screen'
+OUTPUT = 'files'
 no_plot = False
 no_plot = True
 only_one = '86514995.dcm'
@@ -54,9 +54,11 @@ def plot_comparison(original, filtered, filter_name):
   ax1.imshow(original, cmap=plt.cm.gray)
   ax1.set_title('original')
   ax1.axis('off')
+  # ax1.axis('tight')
   ax2.imshow(filtered, cmap=plt.cm.gray)
   ax2.set_title(filter_name)
   ax2.axis('off')
+  # ax2.axis('tight')
 
 
 def flatten(l):
@@ -78,12 +80,15 @@ def calc_timing_stats(times_per_image):
       times_row[name] = [diff_datetime.microseconds]
     times_df = times_df.append(times_row)
 
+  if no_plot:
+    return
+
   plt.clf()
   ax = times_df.boxplot()
   ax.set_xticklabels(ax.get_xticklabels(), rotation=45)
   # ax.set_yscale('log')
   plt.legend(loc='best')
-  if OUTPUT == 'screen' and not no_plot:
+  if OUTPUT == 'screen':
     plt.show()
   elif OUTPUT == 'files':
     plt.savefig('%s_timing.png' % output_path)
@@ -138,7 +143,7 @@ def match(metadata, search_strings, detection, times, ocr_num=None):
   detection['match_bool'] = match_bool
   times['match%d_after' % ocr_num] = datetime.now()
 
-def pixel_deidentify(im_resized, detection, times, ocr_num=None):
+def pixel_deidentify(img, im_resized, detection, times, ocr_num=None):
   times['pixel_deidentify%d_before' % ocr_num] = datetime.now()
   removals = []
 
@@ -147,6 +152,12 @@ def pixel_deidentify(im_resized, detection, times, ocr_num=None):
   yellow = 'rgb(255, 255, 0)' # yellow color
   black = 'rgb(0, 0, 0)' # yellow color
   
+  im_orig = cv2.resize(img, dsize=(img.shape[1]*4, img.shape[0]*4), interpolation=cv2.INTER_CUBIC)
+  image_orig = Image.fromarray(im_orig)
+  draw_orig = ImageDraw.Draw(image_orig)
+  image_color = Image.fromarray(im_orig)
+  draw_color = ImageDraw.Draw(image_color)
+
   # Draw Annotations
   for index, row in detection.iterrows():
     if row.match_bool:
@@ -162,9 +173,12 @@ def pixel_deidentify(im_resized, detection, times, ocr_num=None):
       annotation = 'ocr: %s, %d\nmatch: %s, %d' % (ocr_text, ocr_conf, match_text, match_conf)
 
       xy = [left, top, left+width, top+height]
-      draw.rectangle(xy, fill=black, outline=yellow)
       font = ImageFont.truetype('/home/dan/pixel_deidentify/fonts/Roboto-Regular.ttf', size=int(height/2.5))
+      draw.rectangle(xy, fill=black, outline=yellow)
       draw.multiline_text((left, top), annotation, fill=yellow, font=font)
+
+      draw_color.rectangle(xy, fill=black, outline=yellow)
+      draw_color.multiline_text((left, top), annotation, fill=yellow, font=font)
 
       # Store
       removals.append({
@@ -187,12 +201,16 @@ def pixel_deidentify(im_resized, detection, times, ocr_num=None):
   if OUTPUT == 'screen':
     image.show()
   elif OUTPUT == 'files':
-    # plot_comparison(img, w_tophat, 'white tophat')
-    
+    # plot_comparison(im_orig, np.array(image_color), 'Processed')
+    # plt.savefig('%s_compare.png' % output_path, dpi=400)
     times['save_vis%d_before' % ocr_num] = datetime.now()
     image = image.convert('RGB')
     # image.save('%s_%s_vis.png' % (output_path, filename), optimize=True) # PNG
-    image.save('%s_%s_vis.jpg' % (output_path, filename)) # JPG
+    # image.save('%s_%s_vis.jpg' % (output_path, filename)) # JPG processed
+    # image_color.save('%s_%s_vis.jpg' % (output_path, filename)) # JPG original redacted
+    # image_orig.save('%s_%s_vis-orig.jpg' % (output_path, filename)) # JPG original
+    frames = [image_color, image_orig]
+    frames[0].save('%s_%s_vis.gif' % (output_path, filename), format='GIF', append_images=frames[1:], save_all=True, duration=1000, loop=0)
     times['save_vis%d_after' % ocr_num] = datetime.now()
   return removals
 
@@ -229,28 +247,29 @@ def save_stats():
   stats = pd.concat([stats, stat], ignore_index=True, sort=True)
 
   # Plot Stats
-  plt.clf()
-  fig, ax1 = plt.subplots(num=1)
+  if not no_plot:
+    plt.clf()
+    fig, ax1 = plt.subplots(num=1)
 
-  color = 'tab:red'
-  ax1.set_xlabel('Date')
-  ax1.set_ylabel('Count', color=color)
-  ax1.plot(stats.date, stats.PHI_found, color=color)
-  ax1.tick_params(axis='y', labelcolor=color)
+    color = 'tab:red'
+    ax1.set_xlabel('Date')
+    ax1.set_ylabel('Count', color=color)
+    ax1.plot(stats.date, stats.PHI_found, color=color)
+    ax1.tick_params(axis='y', labelcolor=color)
 
-  ax2 = ax1.twinx()  # instantiate a second axes that shares the same x-axis
+    ax2 = ax1.twinx()  # instantiate a second axes that shares the same x-axis
 
-  color = 'tab:blue'
-  ax2.set_ylabel('Accuracy (%)', color=color)  # we already handled the x-label with ax1
-  ax2.plot(stats.date, stats.accuracy*100, color=color)
-  ax2.tick_params(axis='y', labelcolor=color)
+    color = 'tab:blue'
+    ax2.set_ylabel('Accuracy (%)', color=color)  # we already handled the x-label with ax1
+    ax2.plot(stats.date, stats.accuracy*100, color=color)
+    ax2.tick_params(axis='y', labelcolor=color)
 
-  fig.tight_layout()  # otherwise the right y-label is slightly clipped
+    fig.tight_layout()  # otherwise the right y-label is slightly clipped
 
-  if OUTPUT == 'screen' and not no_plot:
-    plt.show()
-  elif OUTPUT == 'files':
-    plt.savefig('%s_accuracy.png' % output_path)
+    if OUTPUT == 'screen':
+      plt.show()
+    elif OUTPUT == 'files':
+      plt.savefig('%s_accuracy.png' % output_path)
 
   # Save Stats
   pickle.dump(stats, open(saved_stats_file, 'wb'))
@@ -273,7 +292,6 @@ try:
       dicom = pydicom.dcmread(filepath, force=True)
       #dicom = pydicom.dcmread('../Pictures/US/88197120.dcm', force=True)
       times['read_image_after'] = datetime.now()
-
 
       ## Filters
       # one image of interest (for testing only)
@@ -324,9 +342,12 @@ try:
 
       # Convert to greyscale
       if len(img.shape) == 3:
+        img_orig = img
         image = Image.fromarray(img,'RGB')
         image = image.convert('L')
         img = np.array(image)
+      else:
+        img_orig = img
 
       ## Preprocess
       times['preprocess_image_before'] = datetime.now()
@@ -370,8 +391,8 @@ try:
       # detection = detection1
       detection = detection2
 
-      # Try more preprocessing if no matches are found in ultrasound
-      if not any(detection.match_bool) and dicom.Modality == 'US':
+      # Try more preprocessing if we didn't find as many PHI as expected in ultrasound
+      if not np.sum(detection.match_bool) >= len(PHI) and dicom.Modality == 'US':
         log.info('Trying more preprocessing.')
         # Sharpen
         image = Image.fromarray(img,'L')
@@ -380,12 +401,12 @@ try:
         img = np.array(image)
         im_resized = cv2.resize(img, dsize=(img.shape[1]*4, img.shape[0]*4), interpolation=cv2.INTER_CUBIC)
 
-        detection = orc(metadata, im_resized, times, ocr_num=2)
-        match(metadata, PHI, detection, times, ocr_num=2)
-
+        detection_more = orc(metadata, im_resized, times, ocr_num=2)
+        match(metadata, PHI, detection_more, times, ocr_num=2)
+        detection = pd.concat([detection_more, detection], ignore_index=True, sort=True)
 
       # Clean Image Pixels
-      removals = pixel_deidentify(im_resized, detection, times, ocr_num=0)
+      removals = pixel_deidentify(img_orig, im_resized, detection, times, ocr_num=0)
       calc_stats(removals)
 
       df = df.append(metadata)
@@ -405,3 +426,4 @@ except Exception as e:
 
 
 
+# 18:02:38.485
