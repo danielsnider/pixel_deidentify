@@ -197,6 +197,7 @@ def pixel_deidentify(img, im_resized, detection, times, ocr_num=None):
 
   times['pixel_deidentify%d_after' % ocr_num] = datetime.now()
 
+  times['save%d_before' % ocr_num] = datetime.now()
   # Save to disk
   if OUTPUT == 'screen':
     image.show()
@@ -212,6 +213,7 @@ def pixel_deidentify(img, im_resized, detection, times, ocr_num=None):
     frames = [image_color, image_orig]
     frames[0].save('%s_%s_vis.gif' % (output_path, filename), format='GIF', append_images=frames[1:], save_all=True, duration=1000, loop=0)
     times['save_vis%d_after' % ocr_num] = datetime.now()
+  times['save%d_after' % ocr_num] = datetime.now()
   return removals
 
 def time_diff(t_a, t_b):
@@ -303,15 +305,18 @@ try:
         img = dicom.pixel_array
       else:
         log.warning('Required data not found in DICOM: %s' % filename)
+        # copyfile(filepath, '%s_%s' % (output_path, filename))
         continue
 
       # Image shape
       if img.shape == 0:
         log.warning('Image size is 0: %s' % filename)
+        # copyfile(filepath, '%s_%s' % (output_path, filename))
         continue
       if len(img.shape) not in [2,3]:
         # TODO: Support 3rd physical dimension, z-slices. Assuming dimenions x,y,[color] from here on.
         log.warning('Image shape is not 2d-grey or rgb: %s' % filename)
+        # copyfile(filepath, '%s_%s' % (output_path, filename))
         continue
 
       # Colorspace
@@ -331,6 +336,7 @@ try:
         aspect_ratio = img.shape[1] / img.shape[0]
         if not 1.2 < aspect_ratio < 1.6:
           log.warning('Image shape is not expected for ultrasounds: %s (%d,%d)' % (filename, img.shape[0], img.shape[1]))
+          # copyfile(filepath, '%s_%s' % (output_path, filename))
           continue
 
         # Too much white (US)
@@ -338,7 +344,10 @@ try:
         percent_white_pixels = num_white_pixels / img.size
         if percent_white_pixels > 0.2:
           log.warning('Image has more than 20%% white pixels: %s' % filename)
+          # copyfile(filepath, '%s_%s' % (output_path, filename))
           continue
+
+        continue
 
       # Convert to greyscale
       if len(img.shape) == 3:
@@ -426,4 +435,3 @@ except Exception as e:
 
 
 
-# 18:02:38.485
