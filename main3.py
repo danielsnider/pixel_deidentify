@@ -14,6 +14,7 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 
+from IPython import embed
 from fuzzywuzzy import fuzz
 from itertools import chain
 from datetime import datetime
@@ -33,19 +34,21 @@ log.info('Starting Pixel De-Identify')
 input_folder = '/home/dan/Two_Images'
 input_folder = '/home/dan/Pictures/Spikey'
 input_folder = '/home/dan/Pictures/US'
+RESIZE_FACTOR = 4 # how much to blow up image to make OCR work better
 MATCH_CONF_THRESH = 50
 OUTPUT = 'screen'
-OUTPUT = 'files'
+OUTPUT = 'gifs'
+OUTPUT = 'dcm'
 no_plot = False
 no_plot = True
-only_one = '86514995.dcm'
+only_one = '88179052.dcm'
 only_one = None
 datestr = time.strftime('%Y%m%d-%H%M%S')
 output_path = '/home/dan/pixel_deidentify/plots/%s' % datestr
 
 if OUTPUT == 'screen':
   matplotlib.use('TkAgg')
-elif OUTPUT == 'files':
+elif OUTPUT in ['gifs', 'dcm']:
   matplotlib.use('Agg')
 
 def plot_comparison(original, filtered, filter_name):
@@ -90,25 +93,10 @@ def calc_timing_stats(times_per_image):
   plt.legend(loc='best')
   if OUTPUT == 'screen':
     plt.show()
-  elif OUTPUT == 'files':
+  elif OUTPUT in ['gifs','dcm']:
     plt.savefig('%s_timing.png' % output_path)
 
-def orc(metadata, image, times, ocr_num=None):
-  times['ocr%d_before' % ocr_num] = datetime.now()
-  # Do OCR
-  tesseract_config = '--oem %d --psm 3' % ocr_num
-  detection = pytesseract.image_to_data(image,config=tesseract_config, output_type=pytesseract.Output.DICT)
-  detection = pd.DataFrame.from_dict(detection) # convert to dataframe
-  detection = detection[detection.text != ''] # remove empty strings
-
-  times['ocr%d_after' % ocr_num] = datetime.now()
-  if detection.empty:
-    log.warning('No text found by OCR')
-    return detection
-
-  metadata['ocr%d_detection' % ocr_num] = [detection]
-  return detection
-
+2
 def match(metadata, search_strings, detection, times, ocr_num=None):
   if detection.empty:
     return
@@ -143,7 +131,7 @@ def match(metadata, search_strings, detection, times, ocr_num=None):
   detection['match_bool'] = match_bool
   times['match%d_after' % ocr_num] = datetime.now()
 
-def pixel_deidentify(img, im_resized, detection, times, ocr_num=None):
+def pixel_deidentify(dicom, img, im_resized, detection, times, ocr_num=None):
   times['pixel_deidentify%d_before' % ocr_num] = datetime.now()
   removals = []
 
@@ -152,11 +140,13 @@ def pixel_deidentify(img, im_resized, detection, times, ocr_num=None):
   yellow = 'rgb(255, 255, 0)' # yellow color
   black = 'rgb(0, 0, 0)' # yellow color
   
-  im_orig = cv2.resize(img, dsize=(img.shape[1]*4, img.shape[0]*4), interpolation=cv2.INTER_CUBIC)
+  im_orig = cv2.resize(img, dsize=(img.shape[1]*RESIZE_FACTOR, img.shape[0]*RESIZE_FACTOR), interpolation=cv2.INTER_CUBIC)
   image_orig = Image.fromarray(im_orig)
   draw_orig = ImageDraw.Draw(image_orig)
   image_color = Image.fromarray(im_orig)
   draw_color = ImageDraw.Draw(image_color)
+
+  dicom_pixels = dicom.pixel_array
 
   # Draw Annotations
   for index, row in detection.iterrows():
@@ -180,16 +170,28 @@ def pixel_deidentify(img, im_resized, detection, times, ocr_num=None):
       draw_color.rectangle(xy, fill=black, outline=yellow)
       draw_color.multiline_text((left, top), annotation, fill=yellow, font=font)
 
+      # Black out in actual dicom pixels (saving my PIL de-id'd image into the DICOM is giving me trouble)
+      if OUTPUT == 'dcm':
+        sml_left = int(left / RESIZE_FACTOR)
+        sml_top = int(top / RESIZE_FACTOR)
+        sml_width = int(width / RESIZE_FACTOR)
+        sml_height = int(height / RESIZE_FACTOR)
+        dicom_pixels[sml_top:sml_top+sml_height, sml_left:sml_left+sml_width] = 0
+        dicom_pixels[sml_top, sml_left:sml_left+sml_width] = np.max(dicom_pixels)
+        dicom_pixels[sml_top+sml_height, sml_left:sml_left+sml_width] = np.max(dicom_pixels)
+        dicom_pixels[sml_top:sml_top+sml_height, sml_left] = np.max(dicom_pixels)
+        dicom_pixels[sml_top:sml_top+sml_height, sml_left+sml_width] = np.max(dicom_pixels)
+
       # Store
       removals.append({
-        'top': 'top',
-        'left': 'left',
-        'height': 'height',
-        'width': 'width',
-        'ocr_text': 'ocr_text',
-        'ocr_conf': 'ocr_conf',
-        'match_conf': 'match_conf',
-        'match_text': 'match_text',
+        'top': top,
+        'left': left,
+        'height': height,
+        'width': width,
+        'ocr_text': ocr_text,
+        'ocr_conf': ocr_conf,
+        'match_conf': match_conf,
+        'match_text': match_text,
       })
 
   if len(removals)==0:
@@ -201,7 +203,14 @@ def pixel_deidentify(img, im_resized, detection, times, ocr_num=None):
   # Save to disk
   if OUTPUT == 'screen':
     image.show()
-  elif OUTPUT == 'files':
+  elif OUTPUT == 'dcm':
+    embed()
+    if dicom.file_meta.TransferSyntaxUID.is_compressed:
+      dicom.decompress()
+    dicom.PixelData = dicom_pixels.tobytes()
+    dicom.save_as(filepath)
+    log.info('Saved de-id dicom to: %s' % filepath)
+  elif OUTPUT == 'gifs':
     # plot_comparison(im_orig, np.array(image_color), 'Processed')
     # plt.savefig('%s_compare.png' % output_path, dpi=400)
     times['save_vis%d_before' % ocr_num] = datetime.now()
@@ -291,8 +300,8 @@ try:
 
       # Load Image
       times['read_image_before'] = datetime.now()
-      dicom = pydicom.dcmread(filepath, force=True)
-      #dicom = pydicom.dcmread('../Pictures/US/88197120.dcm', force=True)
+      # dicom = pydicom.dcmread(filepath, force=True)
+      dicom = pydicom.dcmread('/home/dan/Pictures/US/US/88197120.dcm', force=True)
       times['read_image_after'] = datetime.now()
 
       ## Filters
@@ -347,8 +356,6 @@ try:
           # copyfile(filepath, '%s_%s' % (output_path, filename))
           continue
 
-        continue
-
       # Convert to greyscale
       if len(img.shape) == 3:
         img_orig = img
@@ -361,14 +368,15 @@ try:
       ## Preprocess
       times['preprocess_image_before'] = datetime.now()
 
-      # from IPython import embed
-      # embed() # drop into an IPython session
+      # image = Image.fromarray(img,'RGB')
+      # image = Image.fromarray(img,'L')
+      # image.show()
 
       # TopHat to strengthen text
       selem = disk(10)
       img = white_tophat(img, selem)
 
-      im_resized = cv2.resize(img, dsize=(img.shape[1]*4, img.shape[0]*4), interpolation=cv2.INTER_CUBIC)
+      im_resized = cv2.resize(img, dsize=(img.shape[1]*RESIZE_FACTOR, img.shape[0]*RESIZE_FACTOR), interpolation=cv2.INTER_CUBIC)
       times['preprocess_image_after'] = datetime.now()
 
       # Build list of PHI to look for: MNR, FirstName, LastName
@@ -408,20 +416,21 @@ try:
         image = image.filter( ImageFilter.GaussianBlur(radius=1.5))
         image = image.filter( ImageFilter.EDGE_ENHANCE_MORE )
         img = np.array(image)
-        im_resized = cv2.resize(img, dsize=(img.shape[1]*4, img.shape[0]*4), interpolation=cv2.INTER_CUBIC)
+        im_resized = cv2.resize(img, dsize=(img.shape[1]*RESIZE_FACTOR, img.shape[0]*RESIZE_FACTOR), interpolation=cv2.INTER_CUBIC)
 
         detection_more = orc(metadata, im_resized, times, ocr_num=2)
         match(metadata, PHI, detection_more, times, ocr_num=2)
         detection = pd.concat([detection_more, detection], ignore_index=True, sort=True)
 
       # Clean Image Pixels
-      removals = pixel_deidentify(img_orig, im_resized, detection, times, ocr_num=0)
+      removals = pixel_deidentify(dicom, img_orig, im_resized, detection, times, ocr_num=0)
       calc_stats(removals)
 
       df = df.append(metadata)
       times_per_image.append(times)
 
       log.info('Finished Processing: %s' % filepath)
+      break
 
   save_stats()
   calc_timing_stats(times_per_image)
